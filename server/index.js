@@ -1,7 +1,8 @@
-// OAuth Subscriptions (Claude Code CLI & Codex CLI), the server half:
-// Registers two native connection kinds in Project Sigma:
-//   1. "claude-subscription" -> Claude Subscription (Claude Code CLI)
-//   2. "codex-subscription"  -> ChatGPT / Codex Subscription (Codex CLI)
+// OAuth Subscriptions (Claude Code CLI, Codex CLI & Antigravity CLI), the server half:
+// Registers three native connection kinds in Project Sigma:
+//   1. "claude-subscription"      -> Claude Subscription (Claude Code CLI)
+//   2. "codex-subscription"       -> ChatGPT / Codex Subscription (Codex CLI)
+//   3. "antigravity-subscription" -> Antigravity Subscription (Antigravity CLI)
 
 import {
     chatClaudeCli,
@@ -15,6 +16,12 @@ import {
     listCodexCliModels,
     codexStatus,
 } from './codex-cli.js';
+import {
+    chatAgyCli,
+    streamAgyCli,
+    listAgyCliModels,
+    agyStatus,
+} from './antigravity-cli.js';
 
 export function register(router, ctx) {
     const { LlmError } = ctx.llm.kit;
@@ -32,15 +39,15 @@ export function register(router, ctx) {
 
     function readSettings(profile) {
         const db = (profile?.id && dbByProfile.get(profile.id)) || lastDb;
-        if (!db) {
-            return {
-                claudeUseResume: true,
-                claudeIdentityMode: false,
-                claudeFastMode: false,
-                codexReasoningSummary: 'auto',
-                codexVerbosity: 'medium',
-            };
-        }
+        const defaults = {
+            claudeUseResume: true,
+            claudeIdentityMode: false,
+            claudeFastMode: false,
+            codexReasoningSummary: 'auto',
+            codexVerbosity: 'medium',
+            antigravityMode: 'direct',
+        };
+        if (!db) return defaults;
         try {
             return {
                 claudeUseResume: ctx.setting(db, 'claudeUseResume') !== false,
@@ -48,22 +55,21 @@ export function register(router, ctx) {
                 claudeFastMode: ctx.setting(db, 'claudeFastMode') === true,
                 codexReasoningSummary: String(ctx.setting(db, 'codexReasoningSummary') || 'auto'),
                 codexVerbosity: String(ctx.setting(db, 'codexVerbosity') || 'medium'),
+                antigravityMode: String(ctx.setting(db, 'antigravityMode') || 'direct'),
             };
         } catch {
-            return {
-                claudeUseResume: true,
-                claudeIdentityMode: false,
-                claudeFastMode: false,
-                codexReasoningSummary: 'auto',
-                codexVerbosity: 'medium',
-            };
+            return defaults;
         }
     }
 
     router.get('/status', async (_req, res) => {
         try {
-            const [claude, codex] = await Promise.all([claudeStatus(), codexStatus()]);
-            res.json({ claude, codex });
+            const [claude, codex, antigravity] = await Promise.all([
+                claudeStatus(),
+                codexStatus(),
+                agyStatus(),
+            ]);
+            res.json({ claude, codex, antigravity });
         } catch (err) {
             res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
         }
@@ -119,6 +125,35 @@ export function register(router, ctx) {
         },
         async listModels() {
             return listCodexCliModels();
+        },
+    });
+
+    ctx.llm.registerAdapter({
+        kind: 'antigravity-subscription',
+        displayName: 'Antigravity Subscription (Antigravity CLI)',
+        defaultBaseUrl: 'cli://antigravity',
+        requiresBaseUrl: false,
+        capabilities: {
+            streaming: true,
+            json: false,
+            reasoning: true,
+            vision: true,
+        },
+        paramTable: {
+            temperature: 'temperature',
+            topP: 'top_p',
+            maxTokens: 'max_tokens',
+            stop: 'stop',
+            reasoning: 'reasoning',
+        },
+        async chat(profile, req, signal) {
+            return chatAgyCli(profile, req, readSettings(profile), signal, LlmError);
+        },
+        async *chatStream(profile, req, signal) {
+            yield* streamAgyCli(profile, req, readSettings(profile), signal, LlmError);
+        },
+        async listModels() {
+            return listAgyCliModels();
         },
     });
 }

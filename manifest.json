@@ -1,9 +1,9 @@
 {
     "id": "oauth-subscriptions",
-    "name": "OAuth Subscriptions (Claude & Codex CLI)",
+    "name": "OAuth Subscriptions (Claude, Codex & Antigravity CLI)",
     "version": "1.0.0",
     "author": "DJLegends",
-    "description": "Use your Claude Pro/Max (Claude Code CLI) and ChatGPT Plus/Pro (Codex CLI) OAuth subscriptions as native connection kinds in Project Σ: pick \"Claude Subscription (Claude Code CLI)\" or \"ChatGPT / Codex Subscription (Codex CLI)\" in Settings > AI. Runs fully isolated for roleplay (no tools, MCP, skills, or file access), supports multi-turn session replay, vision, and streaming thinking.",
+    "description": "Use your Claude Pro/Max (Claude Code CLI), ChatGPT Plus/Pro (Codex CLI), and Google AI / Antigravity (Antigravity CLI) OAuth subscriptions as native connection kinds in Project Σ. Runs isolated for roleplay with multi-turn session replay, vision, and streaming thinking.",
     "requires": { "api": "2.6" },
     "client": "client/index.js",
     "server": "server/index.js",
@@ -12,6 +12,7 @@
         "claudeIdentityMode": false,
         "claudeFastMode": false,
         "codexReasoningSummary": "auto",
-        "codexVerbosity": "medium"
+        "codexVerbosity": "medium",
+        "antigravityMode": "direct"
     }
 }
