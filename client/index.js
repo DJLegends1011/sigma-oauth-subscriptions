@@ -49,7 +49,7 @@ export default {
                 const agyBadge = a.installed
                     ? (a.loggedIn
                         ? `✅ Installed (v${esc(a.version || '?')}) · Logged in (${esc(a.tierName || 'Antigravity')}${a.email ? ` · ${esc(a.email)}` : ''})${formatAgyPools(a.pools)}`
-                        : `⚠️ Installed (v${esc(a.version || '?')}) · Not logged in (run <code>agy</code>)`)
+                        : `⚠️ Installed (v${esc(a.version || '?')}) · Not logged in (run <code>agy</code>; no token at <code>${esc(a.tokenPath || '?')}</code>, set <code>AGY_DATA_DIR</code> if your login is stored elsewhere)`)
                     : '❌ Not found on PATH';
 
                 return `

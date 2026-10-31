@@ -17,6 +17,7 @@ import {
     unlinkSync,
 } from 'node:fs';
 import { join, dirname, delimiter } from 'node:path';
+import { windowsBinCandidates } from './win-bin.js';
 import { homedir, tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { TEXT_ONLY_PREAMBLE, splitForResume, foldConversation } from './messages.js';
@@ -109,12 +110,14 @@ export function resolveClaudeBinary() {
     const candidates = [
         process.env.CLAUDE_PATH,
         '/data/data/com.termux/files/usr/bin/claude',
-        join(h, '.local', 'bin', 'claude'),
+        join(h, '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude'),
         join(h, '.claude', 'local', 'claude'),
-        ...String(process.env.PATH || '')
-            .split(delimiter)
-            .filter(Boolean)
-            .map(dir => join(dir, process.platform === 'win32' ? 'claude.cmd' : 'claude')),
+        ...(process.platform === 'win32'
+            ? windowsBinCandidates('claude')
+            : String(process.env.PATH || '')
+                .split(delimiter)
+                .filter(Boolean)
+                .map(dir => join(dir, 'claude'))),
     ].filter(Boolean);
 
     for (const c of candidates) {
@@ -473,7 +476,7 @@ function classifyClaudeError(text, LlmError) {
         lower.includes('authentication_failed') ||
         lower.includes('invalid api key')
     ) {
-        return new LlmError('auth', `${s} — Run \`claude auth login\` in Termux.`, { status: 401, retryable: false });
+        return new LlmError('auth', `${s} — Run \`claude auth login\`.`, { status: 401, retryable: false });
     }
     if (
         lower.includes('hit your limit') ||
@@ -501,7 +504,7 @@ export async function* streamClaudeCli(profile, req, settings, signal, LlmError,
 
     const auth = await getClaudeAuthToken(profile);
     if (!auth?.accessToken) {
-        throw new LlmError('auth', 'No Claude Code OAuth login found in `~/.claude/.credentials.json`. Run `claude auth login` in Termux.', {
+        throw new LlmError('auth', 'No Claude Code OAuth login found in `~/.claude/.credentials.json`. Run `claude auth login`.', {
             status: 401,
             retryable: false,
         });

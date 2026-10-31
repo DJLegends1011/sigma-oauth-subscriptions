@@ -7,6 +7,7 @@ import { createInterface } from 'node:readline';
 import { EventEmitter } from 'node:events';
 import { existsSync, readFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join, delimiter } from 'node:path';
+import { windowsBinCandidates } from './win-bin.js';
 import { homedir, tmpdir } from 'node:os';
 import { TEXT_ONLY_PREAMBLE, splitForResume, foldConversation } from './messages.js';
 
@@ -72,10 +73,12 @@ export function resolveCodexBinary() {
         '/data/data/com.termux/files/usr/lib/node_modules/@openai/codex/bin/codex.js',
         join(h, '.local', 'bin', 'codex'),
         join(h, '.codex', 'bin', 'codex'),
-        ...String(process.env.PATH || '')
-            .split(delimiter)
-            .filter(Boolean)
-            .map(dir => join(dir, process.platform === 'win32' ? 'codex.cmd' : 'codex')),
+        ...(process.platform === 'win32'
+            ? windowsBinCandidates('codex')
+            : String(process.env.PATH || '')
+                .split(delimiter)
+                .filter(Boolean)
+                .map(dir => join(dir, 'codex'))),
     ].filter(Boolean);
 
     for (const c of candidates) {
@@ -519,7 +522,7 @@ function classifyCodexTurnError(error, LlmError) {
         return new LlmError('quota', `${base}${details}`, { status: 429, retryable: false });
     }
     if (code === 'unauthorized') {
-        return new LlmError('auth', `${base}${details} — Run \`codex login\` in Termux.`, { status: 401, retryable: false });
+        return new LlmError('auth', `${base}${details} — Run \`codex login\`.`, { status: 401, retryable: false });
     }
     if (code === 'contextWindowExceeded') {
         return new LlmError('context', `${base}${details}`, { status: 400, retryable: false });
@@ -545,7 +548,7 @@ export async function* streamCodexCli(profile, req, settings, signal, LlmError) 
 
     const auth = readCodexAuthSummary(server.codexHome ?? resolveCodexHome());
     if (!auth.present) {
-        throw new LlmError('auth', 'No Codex CLI login found in `~/.codex/auth.json`. Run `codex login` in Termux.', {
+        throw new LlmError('auth', 'No Codex CLI login found in `~/.codex/auth.json`. Run `codex login`.', {
             status: 401,
             retryable: false,
         });

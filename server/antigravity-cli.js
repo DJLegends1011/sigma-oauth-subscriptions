@@ -353,7 +353,7 @@ function buildCloudCodeContents(turns) {
 async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = false) {
     const auth = await getAgyAuthToken(profile);
     if (!auth?.accessToken) {
-        throw new LlmError('auth', 'No Antigravity OAuth login found in `~/.gemini/antigravity-cli/antigravity-oauth-token`. Run `agy` in Termux to sign in.', {
+        throw new LlmError('auth', 'No Antigravity OAuth login found in `~/.gemini/antigravity-cli/antigravity-oauth-token`. Run `agy` to sign in.', {
             status: 401,
             retryable: false,
         });
@@ -645,6 +645,7 @@ export async function agyStatus() {
     return {
         installed: Boolean(bin),
         binaryPath: bin?.path ?? null,
+        tokenPath: tokenFilePath(),
         version,
         loggedIn,
         email: auth?.email ?? null,
