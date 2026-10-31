@@ -31,6 +31,22 @@ const AGY_CLIENT_SECRET = '***REMOVED***';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
+const STATIC_AGY_CLI_MODELS = [
+    { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
+    { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+    { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)' },
+    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
+    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)' },
+    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)' },
+    { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
+    { id: 'claude-opus-5-5-medium', name: 'Claude Opus 5.5 (Medium)' },
+    { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
+    { id: 'claude-sonnet-5-5-high', name: 'Claude Sonnet 5.5 (High)' },
+    { id: 'claude-sonnet-5-5-medium', name: 'Claude Sonnet 5.5 (Medium)' },
+    { id: 'claude-sonnet-5-5-low', name: 'Claude Sonnet 5.5 (Low)' },
+    { id: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
+];
+
 let cachedVersion = null;
 let cachedProject = null;
 let cachedTierName = null;
@@ -38,15 +54,21 @@ let modelCache = { at: 0, models: null, rawMap: null, tieredIds: null, cliIds: n
 
 export function resolveAgyBinary() {
     const h = homedir();
+    const isWin = process.platform === 'win32';
+    const binName = isWin ? 'agy.exe' : 'agy';
     const candidates = [
         process.env.AGY_PATH,
         '/data/data/com.termux/files/usr/bin/agy',
         join(h, 'agy-termux-musl', 'agy'),
-        join(h, '.local', 'bin', 'agy'),
+        join(h, '.local', 'bin', binName),
+        join(h, '.antigravity', 'bin', binName),
+        '/usr/local/bin/agy',
+        '/opt/homebrew/bin/agy',
+        isWin && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'Antigravity', 'agy.exe') : null,
         ...String(process.env.PATH || '')
             .split(delimiter)
             .filter(Boolean)
-            .map(dir => join(dir, process.platform === 'win32' ? 'agy.exe' : 'agy')),
+            .map(dir => join(dir, binName)),
     ].filter(Boolean);
 
     for (const c of candidates) {
@@ -276,7 +298,7 @@ export async function discoverAgyModels({ force = false } = {}) {
         } catch { /* fall back to CLI list */ }
     }
 
-    const cliList = readCliModelsList();
+    const cliList = [...STATIC_AGY_CLI_MODELS, ...readCliModelsList()];
     const cliIds = new Set(cliList.map(m => m.id));
     for (const cm of cliList) {
         if (!byId.has(cm.id)) {

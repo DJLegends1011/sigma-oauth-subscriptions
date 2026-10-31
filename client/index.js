@@ -53,7 +53,7 @@ export default {
                     : '❌ Not found on PATH';
 
                 return `
-                    <div class="settings-hint" style="margin-bottom:8px;">
+                    <div class="settings-hint" style="margin-bottom:8px;overflow-wrap:anywhere;word-break:break-word;">
                         <div><strong>Claude Code CLI:</strong> ${claudeBadge}</div>
                         <div style="margin-top:4px;"><strong>Codex CLI:</strong> ${codexBadge}</div>
                         <div style="margin-top:4px;"><strong>Antigravity CLI:</strong> ${agyBadge}</div>
@@ -77,16 +77,16 @@ export default {
                         ${renderStatusHtml()}
                     </div>
                     <div class="settings-row">
-                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeUseResume"${claudeUseResume ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span> Claude: Multi-turn JSONL session replay (<code>--resume</code>)</label>
-                        <span class="settings-hint">Replays prior chat turns as a native Claude Code JSONL transcript for real user/assistant role separation and prompt caching.</span>
+                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeUseResume"${claudeUseResume ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span><span>Claude: Multi-turn JSONL session replay</span></label>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Replays prior chat turns as a native Claude Code JSONL transcript via <code>--resume</code> for real user/assistant role separation and prompt caching.</span>
                     </div>
                     <div class="settings-row">
-                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeIdentityMode"${claudeIdentityMode ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span> Claude: Send account identity (disable account isolation)</label>
-                        <span class="settings-hint">Keep off for privacy: when off, Claude Code runs in an isolated config directory with only the OAuth bearer token so your email/org profile is never added to prompts.</span>
+                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeIdentityMode"${claudeIdentityMode ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span><span>Claude: Send account identity (disable isolation)</span></label>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Keep off for privacy: when off, Claude Code runs in an isolated config directory with only the OAuth bearer token so your email/org profile is never added to prompts.</span>
                     </div>
                     <div class="settings-row">
-                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeFastMode"${claudeFastMode ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span> Claude: Enable Fast Mode (<code>CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1</code>)</label>
-                        <span class="settings-hint">Opt into Fast Mode output on supported plans (may draw Extra Usage credits).</span>
+                        <label><input type="checkbox" class="cl-switch-input" data-oauth-bool="claudeFastMode"${claudeFastMode ? ' checked' : ''}><span class="cl-switch" aria-hidden="true"></span><span>Claude: Enable Fast Mode</span></label>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Opt into Fast Mode output on supported plans via <code>CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK=1</code> (may draw Extra Usage credits).</span>
                     </div>
                     <div class="settings-row">
                         <label for="oauth-codex-summary">Codex: Reasoning summary</label>
@@ -96,7 +96,7 @@ export default {
                             <option value="detailed"${codexReasoningSummary === 'detailed' ? ' selected' : ''}>Detailed</option>
                             <option value="none"${codexReasoningSummary === 'none' ? ' selected' : ''}>None (hide reasoning summaries)</option>
                         </select>
-                        <span class="settings-hint">Controls the reasoning summary streamed into Project Σ's Thinking fold by <code>codex app-server</code>.</span>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Controls the reasoning summary streamed into Project Σ's Thinking fold by <code>codex app-server</code>.</span>
                     </div>
                     <div class="settings-row">
                         <label for="oauth-codex-verbosity">Codex: Reply verbosity</label>
@@ -105,7 +105,7 @@ export default {
                             <option value="medium"${codexVerbosity === 'medium' ? ' selected' : ''}>Medium (balanced for roleplay — default)</option>
                             <option value="high"${codexVerbosity === 'high' ? ' selected' : ''}>High (expressive / descriptive)</option>
                         </select>
-                        <span class="settings-hint">Sets <code>model_verbosity</code> on ephemeral Codex roleplay threads (stock Codex defaults to <code>low</code> for coding).</span>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Sets <code>model_verbosity</code> on ephemeral Codex roleplay threads (stock Codex defaults to <code>low</code> for coding).</span>
                     </div>
                     <div class="settings-row">
                         <label for="oauth-agy-mode">Antigravity: Execution mode</label>
@@ -113,7 +113,7 @@ export default {
                             <option value="direct"${antigravityMode !== 'cli' ? ' selected' : ''}>Direct CloudCode CLI API (Recommended — pure roleplay, zero 12k coding prompt overhead)</option>
                             <option value="cli"${antigravityMode === 'cli' ? ' selected' : ''}>Subprocess CLI (agy --output-format stream-json -p=...)</option>
                         </select>
-                        <span class="settings-hint">Direct mode uses your <code>~/.gemini/antigravity-cli/antigravity-oauth-token</code> with the <code>antigravity</code> CLI User-Agent, saving ~12,300 prompt tokens per turn.</span>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">Direct mode uses your <code>~/.gemini/antigravity-cli/antigravity-oauth-token</code> with the <code>antigravity</code> CLI User-Agent, saving ~12,300 prompt tokens per turn.</span>
                     </div>`;
 
                 for (const input of el.querySelectorAll('[data-oauth-set]')) {
