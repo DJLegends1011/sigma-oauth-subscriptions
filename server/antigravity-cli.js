@@ -79,20 +79,16 @@ export function resolveAgyBinary() {
 
 export function detectAgyVersion() {
     if (cachedVersion) return cachedVersion;
-    const bin = resolveAgyBinary();
-    if (!bin) return null;
     try {
-        const out = execFileSync(bin.command, ['--version'], {
-            encoding: 'utf8',
-            timeout: 5000,
-            stdio: ['ignore', 'pipe', 'ignore'],
-        }).trim();
-        const m = out.match(/(\d+\.\d+\.\d+)/);
-        cachedVersion = m ? m[1] : out;
-        return cachedVersion;
-    } catch {
-        return null;
-    }
+        const logHead = readFileSync(join(agyDataDir(), 'cli.log'), 'utf8').slice(0, 2048);
+        const m = logHead.match(/Language server version:\s*(\d+\.\d+\.\d+)/i);
+        if (m) {
+            cachedVersion = m[1];
+            return cachedVersion;
+        }
+    } catch { /* ignore */ }
+    cachedVersion = '1.2.11';
+    return cachedVersion;
 }
 
 function agyUserAgent() {
@@ -186,8 +182,12 @@ export function refreshAgyOAuthToken() {
 }
 
 export async function getAgyAuthToken(profile) {
+    // Only honor profile.api_key if it is explicitly a Google OAuth2 access token (`ya29....`).
+    // Project Sigma's `resolveDraft` inherits `profile.api_key` from the default/base profile
+    // when testing a draft connection with an empty API key input, which would otherwise pass
+    // an OpenRouter or GLM key here.
     const profileKey = String(profile?.api_key ?? '').trim();
-    if (profileKey && !/^(none|null|undefined|placeholder|sk-no-key-needed)$/i.test(profileKey)) {
+    if (/^ya29\.[A-Za-z0-9._-]+$/.test(profileKey)) {
         return { source: 'profile', accessToken: profileKey };
     }
     let stored = readAgyStoredToken();
@@ -235,28 +235,6 @@ async function resolveProjectAndTier(accessToken) {
     };
 }
 
-function readCliModelsList() {
-    const bin = resolveAgyBinary();
-    if (!bin) return [];
-    try {
-        const out = execFileSync(bin.command, ['models'], {
-            encoding: 'utf8',
-            timeout: 10000,
-            stdio: ['ignore', 'pipe', 'ignore'],
-        });
-        return out
-            .trim()
-            .split(/\r?\n/)
-            .map(line => {
-                const [id, name] = line.split('\t');
-                return id ? { id: id.trim(), name: (name || id).trim() } : null;
-            })
-            .filter(Boolean);
-    } catch {
-        return [];
-    }
-}
-
 export async function discoverAgyModels({ force = false } = {}) {
     if (!force && modelCache.models && Date.now() - modelCache.at < MODEL_CACHE_TTL_MS) {
         return modelCache;
@@ -295,12 +273,11 @@ export async function discoverAgyModels({ force = false } = {}) {
                     });
                 }
             }
-        } catch { /* fall back to CLI list */ }
+        } catch { /* fall back to static CLI list */ }
     }
 
-    const cliList = [...STATIC_AGY_CLI_MODELS, ...readCliModelsList()];
-    const cliIds = new Set(cliList.map(m => m.id));
-    for (const cm of cliList) {
+    const cliIds = new Set(STATIC_AGY_CLI_MODELS.map(m => m.id));
+    for (const cm of STATIC_AGY_CLI_MODELS) {
         if (!byId.has(cm.id)) {
             byId.set(cm.id, {
                 id: cm.id,
@@ -391,15 +368,17 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
     const sysText = system ? `${system}\n\n${TEXT_ONLY_PREAMBLE}` : TEXT_ONLY_PREAMBLE;
     const contents = buildCloudCodeContents(turns);
 
+    const wantsThinking = Boolean(req.params?.reasoning || /-(low|medium|high)$/i.test(requestedModel) || /thinking/i.test(targetModel));
+    const requestedMax = Number(req.params?.maxTokens) || 8192;
     const generationConfig = {
-        maxOutputTokens: Math.max(256, Number(req.params?.maxTokens) || 8192),
+        maxOutputTokens: wantsThinking ? Math.max(2048, requestedMax) : Math.max(256, requestedMax),
     };
     if (typeof req.params?.temperature === 'number') generationConfig.temperature = req.params.temperature;
     if (typeof req.params?.topP === 'number') generationConfig.topP = req.params.topP;
     if (Array.isArray(req.params?.stop) && req.params.stop.length > 0) {
         generationConfig.stopSequences = req.params.stop.slice(0, 4);
     }
-    if (req.params?.reasoning || /-(low|medium|high)$/i.test(requestedModel) || /thinking/i.test(targetModel)) {
+    if (wantsThinking) {
         generationConfig.thinkingConfig = { includeThoughts: true };
     }
 

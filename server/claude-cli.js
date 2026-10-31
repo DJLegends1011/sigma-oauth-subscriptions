@@ -257,8 +257,11 @@ export function refreshClaudeOAuthToken() {
 }
 
 export async function getClaudeAuthToken(profile) {
+    // Only honor profile.api_key if it is an actual Anthropic OAuth/API token (`sk-ant-...`).
+    // Project Sigma's `resolveDraft` inherits `profile.api_key` from the base/default profile
+    // when testing a draft connection with an empty API key input.
     const profileKey = String(profile?.api_key ?? '').trim();
-    if (profileKey && !/^(none|null|undefined|placeholder|sk-no-key-needed)$/i.test(profileKey)) {
+    if (/^sk-ant-[A-Za-z0-9._-]+$/i.test(profileKey)) {
         return { source: 'profile', accessToken: profileKey };
     }
     const envToken = String(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '').trim();
