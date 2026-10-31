@@ -772,16 +772,18 @@ export async function chatClaudeCli(profile, req, settings, signal, LlmError) {
 export async function claudeStatus() {
     const bin = resolveClaudeBinary();
     const version = detectClaudeVersion();
+    const auth = await getClaudeAuthToken();
     const creds = readClaudeCredentials()?.claudeAiOauth;
     const hasEnvToken = Boolean(String(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '').trim());
-    const loggedIn = Boolean(hasEnvToken || creds?.accessToken);
+    const accessToken = auth?.accessToken || creds?.accessToken || null;
+    const loggedIn = Boolean(hasEnvToken || accessToken);
 
     let quota = null;
-    if (creds?.accessToken) {
+    if (accessToken) {
         try {
             const res = await fetch(USAGE_URL, {
                 headers: {
-                    Authorization: `Bearer ${creds.accessToken}`,
+                    Authorization: ['Bearer', accessToken].join(' '),
                     'anthropic-beta': USAGE_BETA_HEADER,
                     Accept: 'application/json',
                 },

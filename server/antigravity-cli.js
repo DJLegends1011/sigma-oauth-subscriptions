@@ -64,6 +64,7 @@ export function resolveAgyBinary() {
         join(h, '.antigravity', 'bin', binName),
         '/usr/local/bin/agy',
         '/opt/homebrew/bin/agy',
+        isWin && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe') : null,
         isWin && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'Antigravity', 'agy.exe') : null,
         ...String(process.env.PATH || '')
             .split(delimiter)
@@ -104,27 +105,144 @@ function tokenFilePath() {
     return join(agyDataDir(), 'antigravity-oauth-token');
 }
 
-export function readAgyStoredToken() {
+let cachedKeyringRaw = null;
+let cachedKeyringAt = 0;
+const KEYRING_CACHE_TTL_MS = 60 * 1000;
+
+function readWindowsCredManSecret(target) {
+    if (process.platform !== 'win32') return null;
     try {
-        const raw = JSON.parse(readFileSync(tokenFilePath(), 'utf8'));
-        const tok = typeof raw.token === 'string' ? JSON.parse(raw.token) : raw.token;
-        let email = null;
-        if (typeof raw.id_token === 'string') {
-            try {
-                const payload = JSON.parse(Buffer.from(raw.id_token.split('.')[1], 'base64url').toString('utf8'));
-                email = payload.email || null;
-            } catch { /* ignore */ }
-        }
-        return {
-            raw,
-            accessToken: tok?.access_token ?? null,
-            refreshToken: tok?.refresh_token ?? null,
-            expiryMs: tok?.expiry ? Date.parse(tok.expiry) || 0 : 0,
-            email,
-        };
+        const script = [
+            'Add-Type -TypeDefinition @"',
+            'using System; using System.Runtime.InteropServices; using System.Text;',
+            'public class SigmaCred {',
+            '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
+            '  public struct CREDENTIAL {',
+            '    public uint Flags; public uint Type; public string TargetName; public string Comment;',
+            '    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;',
+            '    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;',
+            '    public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;',
+            '  }',
+            '  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
+            '  public static extern bool CredRead(string target, uint type, uint reservedFlag, out IntPtr credentialPtr);',
+            '  [DllImport("Advapi32.dll", SetLastError = true)]',
+            '  public static extern void CredFree(IntPtr cred);',
+            '  public static string Get(string t) {',
+            '    IntPtr ptr; if (!CredRead(t, 1, 0, out ptr)) return null;',
+            '    try {',
+            '      CREDENTIAL c = (CREDENTIAL)Marshal.PtrToStructure(ptr, typeof(CREDENTIAL));',
+            '      byte[] b = new byte[c.CredentialBlobSize];',
+            '      Marshal.Copy(c.CredentialBlob, b, 0, (int)c.CredentialBlobSize);',
+            '      return Encoding.UTF8.GetString(b);',
+            '    } finally { CredFree(ptr); }',
+            '  }',
+            '}',
+            '"@',
+            `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`,
+            `$s = [SigmaCred]::Get(${JSON.stringify(target)})`,
+            `if ($s) { [Console]::Write($s) }`,
+        ].join('\n');
+        const out = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+            encoding: 'utf8',
+            timeout: 8000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true,
+        });
+        return out && out.trim() ? JSON.parse(out) : null;
     } catch {
         return null;
     }
+}
+
+function writeWindowsCredManSecret(target, userName, jsonString) {
+    if (process.platform !== 'win32') return false;
+    try {
+        const b64 = Buffer.from(jsonString, 'utf8').toString('base64');
+        const script = [
+            'Add-Type -TypeDefinition @"',
+            'using System; using System.Runtime.InteropServices; using System.Text;',
+            'public class SigmaCredWrite {',
+            '  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]',
+            '  public struct CREDENTIAL {',
+            '    public uint Flags; public uint Type; public string TargetName; public string Comment;',
+            '    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;',
+            '    public uint CredentialBlobSize; public IntPtr CredentialBlob; public uint Persist;',
+            '    public uint AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName;',
+            '  }',
+            '  [DllImport("Advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]',
+            '  public static extern bool CredWrite([In] ref CREDENTIAL userCredential, [In] uint flags);',
+            '  public static bool Set(string target, string user, byte[] bytes) {',
+            '    IntPtr blob = Marshal.AllocCoTaskMem(bytes.Length);',
+            '    try {',
+            '      Marshal.Copy(bytes, 0, blob, bytes.Length);',
+            '      CREDENTIAL c = new CREDENTIAL();',
+            '      c.Type = 1; c.TargetName = target; c.UserName = user;',
+            '      c.CredentialBlobSize = (uint)bytes.Length; c.CredentialBlob = blob; c.Persist = 2;',
+            '      return CredWrite(ref c, 0);',
+            '    } finally { Marshal.FreeCoTaskMem(blob); }',
+            '  }',
+            '}',
+            '"@',
+            `$bytes = [Convert]::FromBase64String(${JSON.stringify(b64)})`,
+            `if (-not [SigmaCredWrite]::Set(${JSON.stringify(target)}, ${JSON.stringify(userName)}, $bytes)) { exit 1 }`,
+        ].join('\n');
+        execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+            encoding: 'utf8',
+            timeout: 8000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true,
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function parseAgyTokenPayload(raw, source = 'file') {
+    if (!raw || typeof raw !== 'object') return null;
+    const tok = typeof raw.token === 'string' ? JSON.parse(raw.token) : raw.token;
+    if (!tok || typeof tok !== 'object') return null;
+    let email = typeof raw.id_token_email === 'string' && raw.id_token_email ? raw.id_token_email : null;
+    if (!email && typeof raw.id_token === 'string') {
+        try {
+            const payload = JSON.parse(Buffer.from(raw.id_token.split('.')[1], 'base64url').toString('utf8'));
+            email = payload.email || null;
+        } catch { /* ignore */ }
+    }
+    return {
+        raw,
+        source,
+        accessToken: tok?.access_token ?? null,
+        refreshToken: tok?.refresh_token ?? null,
+        expiryMs: tok?.expiry ? Date.parse(tok.expiry) || 0 : 0,
+        email,
+    };
+}
+
+export function readAgyStoredToken({ forceKeyring = false } = {}) {
+    try {
+        const raw = JSON.parse(readFileSync(tokenFilePath(), 'utf8'));
+        const parsed = parseAgyTokenPayload(raw, 'file');
+        if (parsed?.accessToken) return parsed;
+    } catch { /* fall through to OS keyring */ }
+
+    if (process.platform === 'win32') {
+        const now = Date.now();
+        if (forceKeyring || !cachedKeyringRaw || now - cachedKeyringAt > KEYRING_CACHE_TTL_MS) {
+            const secret = readWindowsCredManSecret('gemini:antigravity');
+            if (secret) {
+                cachedKeyringRaw = secret;
+                cachedKeyringAt = now;
+            }
+        }
+        if (cachedKeyringRaw) {
+            try {
+                const parsed = parseAgyTokenPayload(cachedKeyringRaw, 'keyring');
+                if (parsed?.accessToken) return parsed;
+            } catch { /* ignore */ }
+        }
+    }
+    return null;
 }
 
 let inflightRefresh = null;
@@ -132,7 +250,7 @@ let inflightRefresh = null;
 export function refreshAgyOAuthToken() {
     if (inflightRefresh) return inflightRefresh;
     inflightRefresh = (async () => {
-        const stored = readAgyStoredToken();
+        const stored = readAgyStoredToken({ forceKeyring: true });
         if (!stored?.refreshToken) return false;
         try {
             const res = await fetch(GOOGLE_TOKEN_URL, {
@@ -152,7 +270,8 @@ export function refreshAgyOAuthToken() {
 
             const path = tokenFilePath();
             const latest = readAgyStoredToken() ?? stored;
-            const inner = typeof latest.raw.token === 'string' ? JSON.parse(latest.raw.token) : { ...latest.raw.token };
+            const tokenWasString = typeof latest.raw.token === 'string';
+            const inner = tokenWasString ? JSON.parse(latest.raw.token) : { ...latest.raw.token };
             inner.access_token = data.access_token;
             if (data.refresh_token) inner.refresh_token = data.refresh_token;
             const expDate = new Date(Date.now() + (Number(data.expires_in) || 3600) * 1000);
@@ -160,9 +279,15 @@ export function refreshAgyOAuthToken() {
 
             const updated = {
                 ...latest.raw,
-                token: JSON.stringify(inner),
+                token: tokenWasString ? JSON.stringify(inner) : inner,
                 ...(data.id_token ? { id_token: data.id_token } : {}),
             };
+            if (latest.source === 'keyring' && process.platform === 'win32') {
+                cachedKeyringRaw = updated;
+                cachedKeyringAt = Date.now();
+                writeWindowsCredManSecret('gemini:antigravity', 'antigravity', JSON.stringify(updated));
+                return true;
+            }
             const tmp = `${path}.${process.pid}.tmp`;
             try {
                 writeFileSync(tmp, JSON.stringify(updated), { mode: 0o600 });
@@ -197,7 +322,7 @@ export async function getAgyAuthToken(profile) {
         stored = readAgyStoredToken() ?? stored;
     }
     return {
-        source: 'file',
+        source: stored.source || 'file',
         accessToken: stored.accessToken,
         refreshToken: stored.refreshToken,
         expiryMs: stored.expiryMs,
@@ -401,7 +526,7 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         signal,
     });
 
-    if (res.status === 401 && !retriedAuth && auth.source === 'file') {
+    if (res.status === 401 && !retriedAuth && (auth.source === 'file' || auth.source === 'keyring')) {
         const ok = await refreshAgyOAuthToken();
         if (ok) {
             yield* streamAgyDirect(profile, req, signal, LlmError, true);
