@@ -22,9 +22,9 @@ Zero npm dependencies are required — the extension talks directly to your inst
      - **Live Model Discovery**: Queries `model/list` from the Codex app-server (with fallback to `~/.codex/models_cache.json` and built-in GPT-5.x / GPT-6 models).
   3. **Antigravity Subscription (Antigravity CLI)** (`kind: "antigravity-subscription"`):
      - Reads `~/.gemini/antigravity-cli/antigravity-oauth-token` and automatically refreshes expired Google OAuth tokens.
-     - **Direct CloudCode CLI API Mode (Default)**: Calls `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse` with the `antigravity/<version>` CLI User-Agent, bypassing the 12,300-token coding agent prompt & tool schemas while supporting full multi-turn `contents`, `systemInstruction`, samplers (`temperature`, `topP`, `maxOutputTokens`, `stopSequences`), vision (`inlineData`), and streaming thoughts (`thought: true`).
-     - **Subprocess CLI Mode (`agy -p --output-format stream-json`)**: Optionally spawns `agy` in an isolated temp folder and cleans up the ephemeral conversation entry when finished.
-     - **Access Both Gemini & Claude 5.5 / GPT-OSS Pools**: Lists all available models from `v1internal:fetchAvailableModels` and `agy models`.
+     - **Legacy Direct CloudCode API Mode**: Calls `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse` with an honest extension User-Agent and detected installed CLI version, sending only the supplied RP system prompt/history without coding instructions or tool schemas while supporting full multi-turn `contents`, `systemInstruction`, samplers (`temperature`, `topP`, `maxOutputTokens`, `stopSequences`), vision (`inlineData`), and streaming thoughts (`thought: true`).
+     - **Isolated CLI Subscription Mode (Default for new setups)**: Optionally spawns `agy` in an isolated temp folder and cleans up the ephemeral conversation entry when finished.
+     - **Mode-specific models and three quota indicators**: Direct models come from `v1internal:fetchAvailableModels`; subprocess models come from `agy models`. Flash/Pro, Claude/GPT and Gemini 4 Argon quota indicators use service data and show unavailable when absent.
 - **Extension Settings & Live CLI Status (`Settings > Extensions > OAuth Subscriptions`)**:
   - Live status panel showing installed `claude`, `codex`, and `agy` CLI versions, login state, subscription tiers, and live quota utilization across Claude and Antigravity model pools.
 
@@ -42,3 +42,15 @@ Zero npm dependencies are required — the extension talks directly to your inst
 - **Codex CLI**: Install `@openai/codex` and log in once via `codex login`.
 - **Antigravity CLI**: Install `agy` and log in once via `agy`.
 - In Project Σ, go to **Settings > AI**, create a connection with Kind **Claude Subscription (Claude Code CLI)**, **ChatGPT / Codex Subscription (Codex CLI)**, or **Antigravity Subscription (Antigravity CLI)**, leave Base URL and API Key blank, and click **Fetch Models**.
+
+
+## Antigravity compatibility and tests
+
+New setups default to Luka’s isolated CLI subscription driver. Legacy Direct CloudCode remains selectable and adds no coding prompt or tool schemas. It uses an undocumented service: on 2026-11-10 the live generation probe returned an unsupported-version notice despite installed CLI 1.5.3. The extension reports that as an error and never automatically switches to subprocess. CLI probes were quota exhausted, so no successful live token-overhead comparison is claimed. Argon quota is displayed separately when returned, otherwise as unavailable.
+
+See [the technical report and before/after comparison](ANTIGRAVITY-REPORT.md) for evidence, remaining restrictions, and documented custom-agent limitations. Run `npm test` for offline mocked regression tests. Changes to server code need a Sigma restart after installation.
+
+
+## Source parity correction under review
+
+The local CLI implementation now ports LukaTheHero/SillyTavern-Subscriptions at commit `46fe9ceaae31e6f4274d577cf222901f5b92f099`, including its isolated custom agent and fallback protection. See [the file-by-file audit and migration plan](docs/PORT-PARITY.md) for measured CLI 1.5.3 behavior and remaining parity gaps. Existing mode identifiers are retained. Explicit saved selections are honored, and existing accounts with an absent mode retain their previous Direct behavior. Fresh accounts receive the isolated CLI default.

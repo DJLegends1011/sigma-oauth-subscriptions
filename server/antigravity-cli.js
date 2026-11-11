@@ -1,28 +1,27 @@
 // Antigravity CLI (`agy`) & CloudCode OAuth Subscription adapter for Project Sigma.
 // Supports both:
-//   - "direct" mode (default): Calls `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
-//     with the Antigravity CLI User-Agent and OAuth token from `~/.gemini/antigravity-cli/antigravity-oauth-token`
-//     for pure roleplay multi-turn chats (zero 12k coding-agent prompt overhead, full sampler & vision support).
-//   - "cli" mode: Spawns `agy --output-format stream-json --disable-slash-commands -p=...` in an isolated temp dir
+//   - "direct" mode (legacy compatibility): Calls `daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse`
+//     identifying this extension and the installed CLI version, with the OAuth token from `~/.gemini/antigravity-cli/antigravity-oauth-token`
+//     with only the supplied RP prompt/history, samplers and images. Backend access is not guaranteed.
+//   - "cli" mode: Spawns `agy --input-format stream-json --output-format stream-json` in an isolated temp dir
 //     and cleans up the ephemeral conversation entry when done.
 
-import { spawn, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { Readable } from 'node:stream';
 import {
-    existsSync,
     readFileSync,
     writeFileSync,
     renameSync,
-    mkdirSync,
-    rmSync,
     chmodSync,
     unlinkSync,
 } from 'node:fs';
-import { join, delimiter } from 'node:path';
+import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
-import { randomUUID } from 'node:crypto';
-import { TEXT_ONLY_PREAMBLE, partitionMessages, foldConversation } from './messages.js';
+import { partitionMessages } from './messages.js';
+import { resolveAgyBinary } from './agy-executable.js';
+export { resolveAgyBinary } from './agy-executable.js';
+import { streamIsolatedAgy, isolatedAgyModels, isolatedAgyStatus } from './isolated-antigravity.js';
 
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -31,72 +30,40 @@ const AGY_CLIENT_SECRET = '***REMOVED***';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const STATIC_AGY_CLI_MODELS = [
-    { id: 'gemini-4-argon-high', name: 'Gemini 4 Argon (High)' },
-    { id: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
-    { id: 'gemini-4-argon-low', name: 'Gemini 4 Argon (Low)' },
-    { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High)' },
-    { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium)' },
-    { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low)' },
-    { id: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
-    { id: 'claude-opus-5-5-medium', name: 'Claude Opus 5.5 (Medium)' },
-    { id: 'claude-opus-5-5-low', name: 'Claude Opus 5.5 (Low)' },
-    { id: 'claude-sonnet-5-5-high', name: 'Claude Sonnet 5.5 (High)' },
-    { id: 'claude-sonnet-5-5-medium', name: 'Claude Sonnet 5.5 (Medium)' },
-    { id: 'claude-sonnet-5-5-low', name: 'Claude Sonnet 5.5 (Low)' },
-    { id: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
-];
-
-let cachedVersion = null;
 let cachedProject = null;
-let cachedTierName = null;
-let modelCache = { at: 0, models: null, rawMap: null, tieredIds: null, cliIds: null };
 
-export function resolveAgyBinary() {
-    const h = homedir();
-    const isWin = process.platform === 'win32';
-    const binName = isWin ? 'agy.exe' : 'agy';
-    const candidates = [
-        process.env.AGY_PATH,
-        '/data/data/com.termux/files/usr/bin/agy',
-        join(h, 'agy-termux-musl', 'agy'),
-        join(h, '.local', 'bin', binName),
-        join(h, '.antigravity', 'bin', binName),
-        '/usr/local/bin/agy',
-        '/opt/homebrew/bin/agy',
-        isWin && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'agy', 'bin', 'agy.exe') : null,
-        isWin && process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs', 'Antigravity', 'agy.exe') : null,
-        ...String(process.env.PATH || '')
-            .split(delimiter)
-            .filter(Boolean)
-            .map(dir => join(dir, binName)),
-    ].filter(Boolean);
-
-    for (const c of candidates) {
-        if (existsSync(c)) return { command: c, path: c };
-    }
-    return null;
-}
+let modelCache = { at: 0, models: null, rawMap: null };
 
 export function detectAgyVersion() {
-    if (cachedVersion) return cachedVersion;
+    const bin = resolveAgyBinary();
+    if (!bin) return null;
     try {
-        const logHead = readFileSync(join(agyDataDir(), 'cli.log'), 'utf8').slice(0, 2048);
-        const m = logHead.match(/Language server version:\s*(\d+\.\d+\.\d+)/i);
-        if (m) {
-            cachedVersion = m[1];
-            return cachedVersion;
-        }
-    } catch { /* ignore */ }
-    cachedVersion = '1.2.11';
-    return cachedVersion;
+        const out = execFileSync(bin.command, [...bin.args, '--version'], {
+            encoding: 'utf8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+            env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, windowsHide: true,
+        }).trim();
+        return out.match(/^(?:Antigravity(?: CLI)?[ /v]*)?(\d+\.\d+\.\d+(?:-[\w.-]+)?)$/im)?.[1] || null;
+    } catch { return null; }
 }
-
 function agyUserAgent() {
-    const ver = detectAgyVersion() || '1.2.11';
-    return `antigravity/${ver} ${process.platform}/${process.arch}`;
+    const ver = detectAgyVersion();
+    if (!ver) throw new Error('Cannot determine installed Antigravity CLI version; no fallback identity is sent.');
+    return `sigma-oauth-subscriptions/1.0.0 (installed-agy/${ver}; ${process.platform}/${process.arch})`;
 }
-
+export function agyError(value, LlmError, status = null) {
+    if (typeof value === 'string') { try { const parsed = JSON.parse(value); value = parsed.error || parsed; } catch {} }
+    status = Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+    const detail = typeof value === 'string' ? value : JSON.stringify(value);
+    const message = `Antigravity${status ? ` HTTP ${status}` : ''}: ${detail || 'unknown failure'}`;
+    const kind = status === 429 || /RESOURCE_EXHAUSTED|quota.{0,30}(?:exhaust|exceed|reached)|\b429\b/i.test(message) ? 'quota'
+        : status === 401 || status === 403 || /UNAUTHENTICATED|oauth|authentication|invalid.grant/i.test(message) ? 'auth' : /not advertised by CloudCode/.test(message) ? 'bad_request' : 'upstream';
+    const error = new LlmError(kind, message.slice(0, 2000), { status: status || (kind === 'quota' ? 429 : kind === 'auth' ? 401 : kind === 'bad_request' ? 400 : 502), retryable: false });
+    if (value && typeof value === 'object') error.code = value.error_code || value.code || value.status || value.type;
+    return error;
+}
+export function isAgyServiceRejection(text) {
+    return /^This version of Antigravity is no longer supported\./i.test(text.trim());
+}
 export function agyDataDir() {
     return process.env.AGY_DATA_DIR || join(homedir(), '.gemini', 'antigravity-cli');
 }
@@ -331,47 +298,30 @@ export async function getAgyAuthToken(profile) {
 }
 
 async function resolveProjectAndTier(accessToken) {
-    if (cachedProject) return { project: cachedProject, tierName: cachedTierName };
-    try {
-        const res = await fetch(`${CLOUDCODE_BASE}:loadCodeAssist`, {
-            method: 'POST',
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-                'User-Agent': agyUserAgent(),
-            },
-            body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }),
-            signal: AbortSignal.timeout(10000),
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data.cloudaicompanionProject) cachedProject = data.cloudaicompanionProject;
-            cachedTierName = data.paidTier?.name || data.currentTier?.name || 'Antigravity';
-        }
-    } catch { /* fall back below */ }
-    if (!cachedProject) {
-        try {
-            cachedProject = readFileSync(join(agyDataDir(), 'cache', 'default_project_id.txt'), 'utf8').trim();
-        } catch { /* ignore */ }
-    }
-    return {
-        project: cachedProject || 'aicode-consumers',
-        tierName: cachedTierName || 'Antigravity',
-    };
+    if (cachedProject?.token === accessToken && Date.now() - cachedProject.at < MODEL_CACHE_TTL_MS) return cachedProject.info;
+    const res = await fetch(`${CLOUDCODE_BASE}:loadCodeAssist`, {
+        method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'User-Agent': agyUserAgent() },
+        body: JSON.stringify({ metadata: { ideType: 'ANTIGRAVITY' } }), signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw Object.assign(new Error(`loadCodeAssist HTTP ${res.status}: ${(await res.text()).slice(0, 1500)}`), { status: res.status });
+    const data = await res.json();
+    const project = typeof data.cloudaicompanionProject === 'string' ? data.cloudaicompanionProject : data.cloudaicompanionProject?.id;
+    if (!project) throw new Error('CloudCode returned no project; direct mode is unavailable for this account.');
+    const info = { project, tierName: data.paidTier?.name || data.currentTier?.name || 'Antigravity' };
+    cachedProject = { token: accessToken, at: Date.now(), info };
+    return info;
 }
-
-export async function discoverAgyModels({ force = false } = {}) {
-    if (!force && modelCache.models && Date.now() - modelCache.at < MODEL_CACHE_TTL_MS) {
+export async function discoverAgyModels({ force = false, profile } = {}) {
+    const auth = await getAgyAuthToken(profile);
+    if (!force && modelCache.token === auth?.accessToken && modelCache.models && Date.now() - modelCache.at < MODEL_CACHE_TTL_MS) {
         return modelCache;
     }
 
-    const auth = await getAgyAuthToken();
     const byId = new Map();
     let rawMap = {};
-    let tieredIds = {};
 
+    if (!auth?.accessToken) throw new Error('Antigravity OAuth login required');
     if (auth?.accessToken) {
-        try {
             const { project } = await resolveProjectAndTier(auth.accessToken);
             const res = await fetch(`${CLOUDCODE_BASE}:fetchAvailableModels`, {
                 method: 'POST',
@@ -383,61 +333,41 @@ export async function discoverAgyModels({ force = false } = {}) {
                 body: JSON.stringify({ project }),
                 signal: AbortSignal.timeout(12000),
             });
-            if (res.ok) {
+            if (!res.ok) throw Object.assign(new Error(`fetchAvailableModels HTTP ${res.status}: ${(await res.text()).slice(0, 1500)}`), { status: res.status });
+            {
                 const data = await res.json();
                 rawMap = data.models || {};
-                tieredIds = data.tieredModelIds || {};
                 for (const [id, m] of Object.entries(rawMap)) {
                     if (/^(chat_|tab_)/.test(id)) continue;
                     byId.set(id, {
                         id,
-                        contextLength: Number(m.maxTokens) || 1000000,
-                        vision: m.supportsImages !== false,
+                        contextLength: Number(m.maxTokens) || null,
+                        vision: m.supportsImages === true,
                         quotaInfo: m.quotaInfo || null,
                         displayName: m.displayName || id,
                     });
                 }
             }
-        } catch { /* fall back to static CLI list */ }
-    }
 
-    const cliIds = new Set(STATIC_AGY_CLI_MODELS.map(m => m.id));
-    for (const cm of STATIC_AGY_CLI_MODELS) {
-        if (!byId.has(cm.id)) {
-            byId.set(cm.id, {
-                id: cm.id,
-                contextLength: 1000000,
-                vision: true,
-                displayName: cm.name,
-            });
-        }
     }
 
     const models = [...byId.values()];
-    modelCache = { at: Date.now(), models, rawMap, tieredIds, cliIds };
+    modelCache = { at: Date.now(), models, rawMap, token: auth.accessToken };
     return modelCache;
 }
 
-export async function listAgyCliModels() {
-    const { models } = await discoverAgyModels();
+export async function listAgyCliModels(profile, settings = {}, signal) {
+    if (settings.antigravityMode !== 'direct') return isolatedAgyModels(signal);
+    const { models } = await discoverAgyModels({ profile });
     return models.map(({ id, contextLength, vision }) => ({ id, contextLength, vision }));
 }
 
-function resolveCloudCodeModel(requestedId, cache) {
-    const raw = String(requestedId || '').trim();
-    if (!raw) return 'gemini-2.5-pro';
-    if (cache?.rawMap && cache.rawMap[raw]) return raw;
-    const tieredPro = cache?.tieredIds?.pro?.[0];
-    const tieredFlash = cache?.tieredIds?.flash?.[0];
-    const tieredLite = cache?.tieredIds?.flashLite?.[0];
-    if (/lite/i.test(raw) && tieredLite) return tieredLite;
-    if (/flash/i.test(raw) && tieredFlash) return tieredFlash;
-    if (tieredPro) return tieredPro;
-    const firstKey = cache?.rawMap ? Object.keys(cache.rawMap).find(k => !/^(chat_|tab_)/.test(k)) : null;
-    return firstKey || raw;
+export function resolveCloudCodeModel(requestedId, cache) {
+    const id = String(requestedId || '').trim();
+    if (id && Object.hasOwn(cache?.rawMap || {}, id)) return id;
+    throw new Error(`Model "${id || '(unset)'}" is not advertised by CloudCode. Refresh models and select an exact ID; quota pools do not imply model availability.`);
 }
-
-function buildCloudCodeContents(turns) {
+export function buildCloudCodeContents(turns) {
     const contents = [];
     for (const t of turns) {
         const role = t.role === 'assistant' ? 'model' : 'user';
@@ -455,7 +385,7 @@ function buildCloudCodeContents(turns) {
             }
         }
         if (t.text) parts.push({ text: t.text });
-        if (!parts.length) parts.push({ text: '[...]' });
+        if (!parts.length) continue;
 
         const prev = contents[contents.length - 1];
         if (prev && prev.role === role) {
@@ -463,14 +393,6 @@ function buildCloudCodeContents(turns) {
         } else {
             contents.push({ role, parts });
         }
-    }
-    if (!contents.length) {
-        contents.push({ role: 'user', parts: [{ text: '[Start]' }] });
-    } else if (contents[contents.length - 1].role === 'model') {
-        contents.push({
-            role: 'user',
-            parts: [{ text: '[Continue your last message — write only what comes next.]' }],
-        });
     }
     return contents;
 }
@@ -484,27 +406,38 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         });
     }
 
-    const cache = await discoverAgyModels();
+    let cache;
+    try { cache = await discoverAgyModels({ profile }); } catch (err) {
+        if (err.status === 401 && !retriedAuth && auth.source !== 'profile' && await refreshAgyOAuthToken()) {
+            yield* streamAgyDirect(profile, req, signal, LlmError, true); return;
+        }
+        throw err;
+    }
     const { project } = await resolveProjectAndTier(auth.accessToken);
     const requestedModel = req.model || profile.model || 'claude-sonnet-5-5-medium';
     const targetModel = resolveCloudCodeModel(requestedModel, cache);
 
     const { system, turns } = partitionMessages(req.messages || []);
-    const sysText = system ? `${system}\n\n${TEXT_ONLY_PREAMBLE}` : TEXT_ONLY_PREAMBLE;
+    const sysText = system;
     const contents = buildCloudCodeContents(turns);
 
-    const wantsThinking = Boolean(req.params?.reasoning || /-(low|medium|high)$/i.test(requestedModel) || /thinking/i.test(targetModel));
-    const requestedMax = Number(req.params?.maxTokens) || 8192;
+    const wantsThinking = req.params?.reasoning?.enabled !== false && Boolean(req.params?.reasoning || /thinking/i.test(targetModel)) && cache.rawMap[targetModel]?.supportsThinking !== false;
+    const requestedMax = req.params?.maxTokens ?? 8192;
+    if (!Number.isInteger(requestedMax) || requestedMax <= 0) throw new LlmError('bad_request', 'Antigravity maxTokens must be a positive integer', { status: 400, retryable: false });
     const generationConfig = {
-        maxOutputTokens: wantsThinking ? Math.max(2048, requestedMax) : Math.max(256, requestedMax),
+        maxOutputTokens: requestedMax,
     };
     if (typeof req.params?.temperature === 'number') generationConfig.temperature = req.params.temperature;
     if (typeof req.params?.topP === 'number') generationConfig.topP = req.params.topP;
     if (Array.isArray(req.params?.stop) && req.params.stop.length > 0) {
-        generationConfig.stopSequences = req.params.stop.slice(0, 4);
+        generationConfig.stopSequences = req.params.stop;
     }
     if (wantsThinking) {
-        generationConfig.thinkingConfig = { includeThoughts: true };
+        generationConfig.thinkingConfig = { includeThoughts: true,
+            ...(typeof req.params?.reasoning?.budgetTokens === 'number' ? { thinkingBudget: req.params.reasoning.budgetTokens } : {}),
+            ...(/^gemini-(?:[3-9]|[1-9][0-9])/.test(targetModel) && req.params?.reasoning?.effort && req.params?.reasoning?.budgetTokens == null
+                ? { thinkingLevel: req.params.reasoning.effort.toUpperCase() } : {}),
+        };
     }
 
     const res = await fetch(`${CLOUDCODE_BASE}:streamGenerateContent?alt=sse`, {
@@ -518,7 +451,7 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
             project,
             model: targetModel,
             request: {
-                systemInstruction: { parts: [{ text: sysText }] },
+                ...(sysText ? { systemInstruction: { parts: [{ text: sysText }] } } : {}),
                 contents,
                 generationConfig,
             },
@@ -534,42 +467,37 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         }
     }
 
-    if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        if (res.status === 401 || res.status === 403) {
-            throw new LlmError('auth', `Antigravity auth error (${res.status}): ${errText.slice(0, 400)}`, { status: res.status, retryable: false });
-        }
-        if (res.status === 429) {
-            throw new LlmError('quota', `Antigravity quota / rate limit (${res.status}): ${errText.slice(0, 400)}`, { status: 429, retryable: false });
-        }
-        throw new LlmError('upstream', `Antigravity CloudCode HTTP ${res.status}: ${errText.slice(0, 500)}`, { status: res.status, retryable: false });
-    }
+    if (!res.ok) throw agyError(await res.text().catch(() => ''), LlmError, res.status);
 
-    const rl = createInterface({ input: Readable.fromWeb(res.body) });
     let finishReason = 'stop';
     let usage = null;
+    let completed = false;
+    let pendingText = '';
+    let textStarted = false;
 
-    for await (const line of rl) {
-        if (signal?.aborted) return;
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice(5).trim();
-        if (!payload || payload === '[DONE]') continue;
-        let parsed;
-        try {
-            parsed = JSON.parse(payload);
-        } catch {
-            continue;
-        }
+    for await (const parsed of readCloudCodeEvents(res.body)) {
+        signal?.throwIfAborted();
         const resp = parsed.response || parsed;
+        if (parsed.error || resp.error) throw agyError(parsed.error || resp.error, LlmError, (parsed.error || resp.error).code);
         const cand = resp.candidates?.[0];
+        if (cand?.finishReason) completed = true;
+        if (resp.promptFeedback?.blockReason || (cand?.finishReason && !['STOP', 'MAX_TOKENS'].includes(cand.finishReason))) throw agyError(resp.promptFeedback || cand, LlmError);
         const parts = cand?.content?.parts;
+        const serviceText = parts?.filter(p => !p.thought).map(p => p.text || '').join('') || '';
+        if (isAgyServiceRejection(serviceText)) throw agyError(serviceText, LlmError, 400);
         if (Array.isArray(parts)) {
             for (const p of parts) {
                 if (p.thought && typeof p.text === 'string' && p.text) {
                     yield { reasoning: p.text };
-                } else if (!p.thought && !p.thoughtSignature && typeof p.text === 'string' && p.text) {
-                    yield { text: p.text };
+                } else if (!p.thought && typeof p.text === 'string' && p.text) {
+                    if (!textStarted) {
+                        pendingText += p.text;
+                        if (isAgyServiceRejection(pendingText)) throw agyError(pendingText, LlmError, 400);
+                        if ('This version of Antigravity is no longer supported.'.toLowerCase().startsWith(pendingText.trim().toLowerCase())) continue;
+                        textStarted = true;
+                        yield { text: pendingText };
+                        pendingText = '';
+                    } else yield { text: p.text };
                 }
             }
         }
@@ -585,129 +513,28 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         }
     }
 
+    if (!completed) throw agyError('CloudCode stream ended without a terminal candidate', LlmError);
+    if (pendingText) yield { text: pendingText };
     yield { done: { finishReason, ...(usage ? { usage } : {}) } };
 }
 
 async function* streamAgySubprocess(profile, req, signal, LlmError) {
-    const bin = resolveAgyBinary();
-    if (!bin) {
-        throw new LlmError('auth', 'Antigravity CLI (`agy`) binary not found on this device.', { status: 400, retryable: false });
-    }
-
-    const requestedModel = req.model || profile.model || 'claude-sonnet-5-5-medium';
-    const effort = req.params?.reasoning?.effort;
-    const prompt = foldConversation(req.messages || [], { includeSystem: true });
-
-    const workDir = join(tmpdir(), `sigma-agy-${randomUUID()}`);
-    mkdirSync(workDir, { recursive: true, mode: 0o700 });
-
-    const args = [
-        '--output-format', 'stream-json',
-        '--disable-slash-commands',
-        '--model', requestedModel,
-    ];
-    if (effort && ['low', 'medium', 'high', 'max'].includes(effort)) {
-        args.push('--effort', effort);
-    }
-    args.push(`-p=${prompt}`);
-
-    const proc = spawn(bin.command, args, {
-        cwd: workDir,
-        env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: true,
-    });
-
-    let stderrText = '';
-    proc.stderr.on('data', d => {
-        stderrText = (stderrText + String(d)).slice(-3000);
-    });
-
-    const onAbort = () => {
-        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    const rl = createInterface({ input: proc.stdout });
-    let conversationId = null;
-    let yieldedText = false;
-    let usage = null;
-    let errorText = null;
-
-    try {
-        for await (const line of rl) {
-            if (signal?.aborted) break;
-            if (!line.trim()) continue;
-            let msg;
-            try { msg = JSON.parse(line); } catch { continue; }
-
-            if (msg.conversation_id && !conversationId) {
-                conversationId = msg.conversation_id;
-            }
-            if (msg.event === 'step_update' && msg.step_update) {
-                const su = msg.step_update;
-                if (!conversationId && su.conversation_id) conversationId = su.conversation_id;
-                if (typeof su.thinking_delta === 'string' && su.thinking_delta) {
-                    yield { reasoning: su.thinking_delta };
-                } else if (typeof su.thinking === 'string' && su.thinking && su.state === 'DONE') {
-                    yield { reasoning: su.thinking };
-                }
-                if (typeof su.text_delta === 'string' && su.text_delta) {
-                    yieldedText = true;
-                    yield { text: su.text_delta };
-                }
-                if (su.error_message) errorText = su.error_message;
-                if (su.usage) {
-                    usage = {
-                        prompt_tokens: su.usage.input_tokens ?? 0,
-                        completion_tokens: (su.usage.output_tokens ?? 0) + (su.usage.thinking_tokens ?? 0),
-                        total_tokens: su.usage.total_tokens ?? 0,
-                    };
-                }
-            } else if (msg.event === 'result' && msg.result) {
-                const r = msg.result;
-                if (!conversationId && r.conversation_id) conversationId = r.conversation_id;
-                if (r.status && r.status !== 'SUCCESS') {
-                    errorText = errorText || r.response || `Antigravity CLI exited with status ${r.status}`;
-                } else if (!yieldedText && typeof r.response === 'string' && r.response) {
-                    yieldedText = true;
-                    yield { text: r.response };
-                }
-                if (r.usage) {
-                    usage = {
-                        prompt_tokens: r.usage.input_tokens ?? 0,
-                        completion_tokens: (r.usage.output_tokens ?? 0) + (r.usage.thinking_tokens ?? 0),
-                        total_tokens: r.usage.total_tokens ?? 0,
-                    };
-                }
-            }
-        }
-    } finally {
-        signal?.removeEventListener('abort', onAbort);
-        try { proc.kill('SIGTERM'); } catch { /* ignore */ }
-        try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
-        if (conversationId) {
-            try { unlinkSync(join(agyDataDir(), 'conversations', `${conversationId}.pb`)); } catch { /* ignore */ }
-            try { rmSync(join(agyDataDir(), 'brain', conversationId), { recursive: true, force: true }); } catch { /* ignore */ }
-        }
-    }
-
-    if (signal?.aborted) return;
-    if (errorText) {
-        throw new LlmError('upstream', errorText.slice(0, 500), { status: 502, retryable: false });
-    }
-    if (!yieldedText && stderrText.trim()) {
-        throw new LlmError('upstream', stderrText.trim().slice(0, 500), { status: 502, retryable: false });
-    }
-
-    yield { done: { finishReason: 'stop', ...(usage ? { usage } : {}) } };
+    yield* streamIsolatedAgy(profile, req, signal, LlmError);
 }
 
 export async function* streamAgyCli(profile, req, settings, signal, LlmError) {
-    if (settings?.antigravityMode === 'cli') {
-        yield* streamAgySubprocess(profile, req, signal, LlmError);
-    } else {
-        yield* streamAgyDirect(profile, req, signal, LlmError);
+    try {
+        signal?.throwIfAborted();
+        if (settings?.antigravityMode !== 'direct') {
+            yield* streamAgySubprocess(profile, req, signal, LlmError);
+        } else {
+            yield* streamAgyDirect(profile, req, signal, LlmError);
+        }
+    } catch (err) {
+        if (signal?.aborted || err?.name === 'AbortError' || err?.kind) throw err;
+        if (err?.name === 'TimeoutError') throw new LlmError('timeout', 'Antigravity request timed out', { retryable: false });
+        if (err instanceof TypeError && /fetch|network/i.test(err.message)) throw new LlmError('network', `Antigravity network failure: ${err.cause?.code || err.message}`, { retryable: false });
+        throw agyError(err?.message || err, LlmError, err?.status);
     }
 }
 
@@ -732,39 +559,25 @@ export async function chatAgyCli(profile, req, settings, signal, LlmError) {
     };
 }
 
-export async function agyStatus() {
+export async function agyStatus(settings = {}) {
+    if (settings.antigravityMode !== 'direct') return isolatedAgyStatus();
     const bin = resolveAgyBinary();
     const version = detectAgyVersion();
     const auth = await getAgyAuthToken();
     const loggedIn = Boolean(auth?.accessToken);
 
     let tierName = null;
-    const pools = [];
+    const pools = parseAgyQuotaPools({});
+    let statusError = null;
 
     if (auth?.accessToken) {
         try {
             const info = await resolveProjectAndTier(auth.accessToken);
             tierName = info.tierName;
-            const cache = await discoverAgyModels({ force: true });
-            const geminiSample = Object.entries(cache.rawMap || {}).find(([k, v]) => k.startsWith('gemini-') && v.quotaInfo)?.[1]?.quotaInfo;
-            const claudeSample = Object.entries(cache.rawMap || {}).find(([k, v]) => k.startsWith('claude-') && v.quotaInfo)?.[1]?.quotaInfo;
-            if (geminiSample && typeof geminiSample.remainingFraction === 'number') {
-                pools.push({
-                    name: 'Gemini Pool',
-                    usedPct: Math.max(0, Math.round((1 - geminiSample.remainingFraction) * 1000) / 10),
-                    remainingPct: Math.round(geminiSample.remainingFraction * 1000) / 10,
-                    resetTime: geminiSample.resetTime || null,
-                });
-            }
-            if (claudeSample && typeof claudeSample.remainingFraction === 'number') {
-                pools.push({
-                    name: 'Claude 5.5 / GPT-OSS Pool',
-                    usedPct: Math.max(0, Math.round((1 - claudeSample.remainingFraction) * 1000) / 10),
-                    remainingPct: Math.round(claudeSample.remainingFraction * 1000) / 10,
-                    resetTime: claudeSample.resetTime || null,
-                });
-            }
-        } catch { /* ignore */ }
+            const quota = await discoverAgyQuotas(auth.accessToken, info.project);
+            pools.splice(0, pools.length, ...parseAgyQuotaPools({}, quota));
+            statusError = quota.errors.join('; ') || null;
+        } catch (err) { statusError = err.message; }
     }
 
     return {
@@ -776,5 +589,60 @@ export async function agyStatus() {
         email: auth?.email ?? null,
         tierName,
         pools,
+        error: statusError,
     };
+}
+
+export async function discoverAgyQuotas(accessToken, project) {
+    const headers = { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'User-Agent': agyUserAgent() };
+    const results = await Promise.allSettled(['retrieveUserQuota', 'retrieveUserQuotaSummary'].map(async action => {
+        const res = await fetch(`${CLOUDCODE_BASE}:${action}`, { method: 'POST', headers, body: JSON.stringify({ project }), signal: AbortSignal.timeout(12000) });
+        if (!res.ok) throw new Error(`${action} HTTP ${res.status}: ${(await res.text()).slice(0, 1000)}`);
+        return res.json();
+    }));
+    if (results.every(r => r.status === 'rejected')) throw results[0].reason;
+    return { ...(results[0].value || {}), ...(results[1].value || {}),
+        errors: results.filter(r => r.status === 'rejected').map(r => r.reason.message) };
+}
+
+export function parseAgyQuotaPools(rawMap, quota = {}) {
+    return [
+        ['Gemini Flash / Pro', id => /gemini/i.test(id) && !/argon/i.test(id)],
+        ['Claude / GPT', id => /claude|gpt/i.test(id)],
+        ['Gemini 4 Argon', id => /argon/i.test(id)],
+    ].map(([name, matches]) => {
+        const groups = (quota.groups || []).filter(g => matches(g.displayName || g.groupId || ''));
+        const summary = groups.flatMap(g => g.buckets || []);
+        const buckets = (quota.buckets || []).filter(b => matches(b.modelId || ''));
+        const models = Object.entries(rawMap).filter(([id]) => matches(id)).map(([, m]) => m.quotaInfo);
+        const source = summary.length ? summary : buckets.length ? buckets : models;
+        const windows = source.filter(q => typeof q?.remainingFraction === 'number' && Number.isFinite(q.remainingFraction)).map(q => {
+            const remaining = Math.max(0, Math.min(1, q.remainingFraction));
+            return { window: q.window || null, remainingPct: Math.round(remaining * 1000) / 10,
+                usedPct: Math.round((1 - remaining) * 1000) / 10, resetTime: q.resetTime || null, exhausted: remaining === 0 };
+        });
+        if (!windows.length) return { name, available: false, remainingPct: null, usedPct: null, resetTime: null, exhausted: false, windows: [] };
+        const limiting = windows.reduce((a, b) => a.remainingPct <= b.remainingPct ? a : b);
+        return { name, available: true, ...limiting, windows };
+    });
+}
+
+/** SSE frames may span lines or network chunks. Never silently discard malformed events. */
+export async function* readCloudCodeEvents(body) {
+    if (!body) throw new Error('CloudCode returned no response body');
+    const input = Readable.fromWeb(body);
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    let data = [];
+    const parse = () => {
+        const text = data.join('\n'); data = [];
+        if (!text || text === '[DONE]') return null;
+        try { return JSON.parse(text); } catch { throw new Error('Malformed CloudCode SSE event'); }
+    };
+    try {
+        for await (const line of lines) {
+            if (line === '') { const event = parse(); if (event) yield event; }
+            else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+        }
+        if (data.length) { const event = parse(); if (event) yield event; }
+    } finally { lines.close(); input.destroy(); }
 }

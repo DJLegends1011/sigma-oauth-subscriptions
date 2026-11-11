@@ -1,7 +1,9 @@
 // OAuth Subscriptions client half: live CLI status + roleplay controls in Settings > Extensions.
 
 export default {
-    init(ctx) {
+    async init(ctx) {
+        // Uses only a local account-scoped route; no quota or generation request.
+        try { await ctx.server.call('/model-context', 'GET'); } catch { /* The settings panel remains accessible while the server is unavailable. */ }
         const esc = s => ctx.CoreAPI.escapeHtml(String(s ?? ''));
 
         ctx.ui.addSettingsSection(el => {
@@ -19,7 +21,12 @@ export default {
 
             const formatAgyPools = pools => {
                 if (!Array.isArray(pools) || !pools.length) return '';
-                const parts = pools.map(p => `${esc(p.name)}: ${esc(p.usedPct)}% used (${esc(p.remainingPct)}% left)`);
+                const parts = pools.map(p => {
+                    if (p.available === false) return `${esc(p.name)}: unavailable`;
+                    const windows = p.windows?.filter(w => w.window) || [];
+                    const describe = w => `${esc(w.usedPct)}% used (${esc(w.remainingPct)}% left)${w.exhausted ? ' · EXHAUSTED' : ''}${w.resetTime ? ` · resets ${esc(w.resetTime)}` : ''}`;
+                    return `${esc(p.name)}: ${windows.length ? windows.map(w => `${esc(w.window)} ${describe(w)}`).join('; ') : describe(p)}`;
+                });
                 return ` · ${parts.join(' | ')}`;
             };
 
@@ -47,8 +54,10 @@ export default {
                     : '❌ Not found on PATH';
 
                 const agyBadge = a.installed
-                    ? (a.loggedIn
-                        ? `✅ Installed (v${esc(a.version || '?')}) · Logged in (${esc(a.tierName || 'Antigravity')}${a.email ? ` · ${esc(a.email)}` : ''})${formatAgyPools(a.pools)}`
+                    ? (a.authState === 'unknown'
+                        ? `Installed (v${esc(a.version || '?')}) · ${esc(a.message)}${formatAgyPools(a.pools)}`
+                        : a.loggedIn
+                        ? `✅ Installed (v${esc(a.version || '?')}) · Logged in (${esc(a.tierName || 'Antigravity')}${a.email ? ` · ${esc(a.email)}` : ''})${formatAgyPools(a.pools)}${a.error ? ` · ${esc(a.error)}` : ''}`
                         : `⚠️ Installed (v${esc(a.version || '?')}) · Not logged in (run <code>agy</code>; no token at <code>${esc(a.tokenPath || '?')}</code>, set <code>AGY_DATA_DIR</code> if your login is stored elsewhere)`)
                     : '❌ Not found on PATH';
 
@@ -66,7 +75,7 @@ export default {
                 const claudeFastMode = ctx.settings.get('claudeFastMode') === true;
                 const codexReasoningSummary = String(ctx.settings.get('codexReasoningSummary') || 'auto');
                 const codexVerbosity = String(ctx.settings.get('codexVerbosity') || 'medium');
-                const antigravityMode = String(ctx.settings.get('antigravityMode') || 'direct');
+                const antigravityMode = String(ctx.settings.get('antigravityMode') || 'cli');
 
                 el.innerHTML = `
                     <div class="settings-row">
@@ -110,10 +119,10 @@ export default {
                     <div class="settings-row">
                         <label for="oauth-agy-mode">Antigravity: Execution mode</label>
                         <select id="oauth-agy-mode" class="glass-input" data-oauth-set="antigravityMode">
-                            <option value="direct"${antigravityMode !== 'cli' ? ' selected' : ''}>Direct CloudCode CLI API (Recommended — pure roleplay, zero 12k coding prompt overhead)</option>
-                            <option value="cli"${antigravityMode === 'cli' ? ' selected' : ''}>Subprocess CLI (agy --output-format stream-json -p=...)</option>
+                            <option value="direct"${antigravityMode === 'direct' ? ' selected' : ''}>Legacy Direct CloudCode (requires backend support)</option>
+                            <option value="cli"${antigravityMode === 'cli' ? ' selected' : ''}>Isolated Antigravity CLI (default for new setups)</option>
                         </select>
-                        <span class="settings-hint" style="overflow-wrap:anywhere;">Direct mode uses your <code>~/.gemini/antigravity-cli/antigravity-oauth-token</code> with the <code>antigravity</code> CLI User-Agent, saving ~12,300 prompt tokens per turn.</span>
+                        <span class="settings-hint" style="overflow-wrap:anywhere;">The isolated CLI uses your Google sign-in and the upstream chat agent with coding instructions and inherited customizations excluded. Legacy Direct CloudCode remains selectable for existing setups.</span>
                     </div>`;
 
                 for (const input of el.querySelectorAll('[data-oauth-set]')) {
