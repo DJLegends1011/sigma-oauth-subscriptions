@@ -20,13 +20,12 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { partitionMessages } from './messages.js';
 import { resolveAgyBinary } from './agy-executable.js';
+import { agyClientCandidates } from './agy-oauth-client.js';
 export { resolveAgyBinary } from './agy-executable.js';
 import { streamIsolatedAgy, isolatedAgyModels, isolatedAgyStatus } from './isolated-antigravity.js';
 
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const AGY_CLIENT_ID = '***REMOVED***';
-const AGY_CLIENT_SECRET = '***REMOVED***';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -213,6 +212,34 @@ export function readAgyStoredToken({ forceKeyring = false } = {}) {
 }
 
 let inflightRefresh = null;
+let acceptedClient = null;
+
+// Google answers invalid_client / unauthorized_client for a pair that is not the refresh
+// token's client; any other failure ends the attempt.
+async function requestAgyRefresh(refreshToken) {
+    const candidates = agyClientCandidates();
+    if (acceptedClient) candidates.sort((a, b) => (b.id === acceptedClient.id && b.secret === acceptedClient.secret) - (a.id === acceptedClient.id && a.secret === acceptedClient.secret));
+    for (const client of candidates) {
+        const res = await fetch(GOOGLE_TOKEN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                client_id: client.id,
+                client_secret: client.secret,
+                refresh_token: refreshToken,
+                grant_type: 'refresh_token',
+            }),
+            signal: AbortSignal.timeout(15000),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.access_token) {
+            acceptedClient = client;
+            return data;
+        }
+        if (data.error !== 'invalid_client' && data.error !== 'unauthorized_client') return null;
+    }
+    return null;
+}
 
 export function refreshAgyOAuthToken() {
     if (inflightRefresh) return inflightRefresh;
@@ -220,19 +247,8 @@ export function refreshAgyOAuthToken() {
         const stored = readAgyStoredToken({ forceKeyring: true });
         if (!stored?.refreshToken) return false;
         try {
-            const res = await fetch(GOOGLE_TOKEN_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: new URLSearchParams({
-                    client_id: AGY_CLIENT_ID,
-                    client_secret: AGY_CLIENT_SECRET,
-                    refresh_token: stored.refreshToken,
-                    grant_type: 'refresh_token',
-                }),
-                signal: AbortSignal.timeout(15000),
-            });
-            if (!res.ok) return false;
-            const data = await res.json();
+            const data = await requestAgyRefresh(stored.refreshToken);
+            if (!data) return false;
             if (!data.access_token) return false;
 
             const path = tokenFilePath();

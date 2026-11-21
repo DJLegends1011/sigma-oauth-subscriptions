@@ -71,9 +71,9 @@ test('invalid token limit fails instead of expanding the requested budget',async
 test('CLI image input fails clearly instead of silently dropping the image',async()=>{req.messages[3].images=[{mediaType:'image/png',data:'aGVsbG8='}];await assert.rejects(chat({antigravityMode:'cli'}),e=>e.kind==='bad_request'&&/text-only/.test(e.message));});
 test('deadline failure remains distinct from quota/auth',async()=>{globalThis.fetch=async()=>{throw new DOMException('expired','TimeoutError');};await assert.rejects(chat(),e=>e.kind==='timeout');});
 test('one OAuth refresh retries discovery with the new token',async()=>{
- const token=join(root,'antigravity-oauth-token');writeFileSync(token,JSON.stringify({token:{access_token:'ya29.old',refresh_token:'test-refresh',expiry:'2099-01-01T00:00:00Z'}}));profile={};let refreshes=0;const mock=globalThis.fetch;
+ const token=join(root,'antigravity-oauth-token');writeFileSync(token,JSON.stringify({token:{access_token:'ya29.old',refresh_token:'test-refresh',expiry:'2099-01-01T00:00:00Z'}}));profile={};let refreshes=0;const mock=globalThis.fetch;process.env.AGY_OAUTH_CLIENT_ID='fixture-client';process.env.AGY_OAUTH_CLIENT_SECRET='fixture-secret';
  globalThis.fetch=(url,opts)=>{if(url.includes('oauth2.googleapis.com')){refreshes++;return json({access_token:'ya29.new',expires_in:3600});}if(url.includes('loadCodeAssist')&&opts.headers.Authorization==='Bearer ya29.old')return json({error:'UNAUTHENTICATED'},401);return mock(url,opts);};
- try {assert.equal((await chat()).content,'Moon');assert.equal(refreshes,1);assert.equal(calls.at(-1).headers.Authorization,'Bearer ya29.new');} finally {rmSync(token);}
+ try {assert.equal((await chat()).content,'Moon');assert.equal(refreshes,1);assert.equal(calls.at(-1).headers.Authorization,'Bearer ya29.new');} finally {rmSync(token);delete process.env.AGY_OAUTH_CLIENT_ID;delete process.env.AGY_OAUTH_CLIENT_SECRET;}
 });
 test('account bootstrap honors saved CLI mode before the first generation',async()=>{
  const {register}=await import('../server/index.js');const routes=new Map(),adapters=[];const db={};
