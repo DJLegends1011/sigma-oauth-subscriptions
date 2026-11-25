@@ -83,6 +83,10 @@ export function effortFromModelId(id) {
     return m ? m[1] : null;
 }
 
+const EFFORT_ORDER = ['low', 'medium', 'high'];
+// words the variants do not carry map to the nearest they do
+const EFFORT_ALIAS = { none: 'low', minimal: 'low', xhigh: 'high', max: 'high' };
+
 /** Strip the effort suffix (gemini-3.8-flash-high → gemini-3.8-flash). */
 export function baseGeminiModel(id) {
     return String(id ?? '').replace(/-(low|medium|high)$/i, '');
@@ -116,18 +120,25 @@ export function resolveGeminiModel(requested, effortOverride, catalog, { forAgy 
 
     let agyModel = raw;
     let agyEffort;
-    if (effortOverride && effortOverride !== inherent) {
-        const wanted = `${base}-${effortOverride}`;
+    // the panel may hand any effort word; the variants only come in low, medium and high
+    const asked = EFFORT_ALIAS[effortOverride] || effortOverride;
+    if (effortOverride && asked !== inherent) {
+        const wanted = `${base}-${asked}`;
         const live = catalog?.source === 'agy' && Array.isArray(catalog.models) ? catalog.models.map((m) => String(m.id)) : null;
         const variants = live ? live.filter((id) => baseGeminiModel(id) === base && effortFromModelId(id)) : [];
         if (live?.includes(wanted)) {
             agyModel = wanted;
+        } else if (variants.length && EFFORT_ORDER.includes(asked)) {
+            // a known level this model lacks becomes the nearest it has, a step up first
+            const at = EFFORT_ORDER.indexOf(asked);
+            const dist = (id) => { const d = EFFORT_ORDER.indexOf(effortFromModelId(id)) - at; return Math.abs(d) * 2 + (d < 0 ? 1 : 0); };
+            agyModel = [...variants].sort((a, b) => dist(a) - dist(b))[0];
         } else if (variants.length) {
             throw badModel(`${base} has no "${effortOverride}" effort variant (available: ${variants.map(effortFromModelId).join(', ')}). Pick one of those in the Gemini reasoning-effort setting.`);
         } else {
             // Not in a live catalog: let agy resolve (and validate) the level.
             agyModel = base;
-            agyEffort = effortOverride;
+            agyEffort = asked;
         }
     }
     if (forAgy && !AGY_MODEL_ID_RE.test(agyModel)) throw badModel(`Invalid Gemini model id ${JSON.stringify(sent.slice(0, 80))}.`);

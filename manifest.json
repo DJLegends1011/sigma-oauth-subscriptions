@@ -1,7 +1,7 @@
 {
     "id": "oauth-subscriptions",
     "name": "OAuth Subscriptions (Claude, Codex & Antigravity CLI)",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "DJLegends",
     "description": "Use your Claude Pro/Max (Claude Code CLI), ChatGPT Plus/Pro (Codex CLI), and Google AI / Antigravity (Antigravity CLI) OAuth subscriptions as native connection kinds in Project \u03a3. Runs isolated for roleplay with multi-turn session replay, vision, and streaming thinking.",
     "requires": {

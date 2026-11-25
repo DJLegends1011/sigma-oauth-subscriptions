@@ -24,6 +24,11 @@ import { agyClientCandidates } from './agy-oauth-client.js';
 export { resolveAgyBinary } from './agy-executable.js';
 import { streamIsolatedAgy, isolatedAgyModels, isolatedAgyStatus } from './isolated-antigravity.js';
 
+// Gemini 3 names minimal, low, medium and high; none cannot switch thinking off there, so it is the lowest level.
+// A custom word goes up as typed and Gemini refuses it, which the connection's Test shows.
+const GEMINI_LEVEL = { none: 'MINIMAL', xhigh: 'HIGH', max: 'HIGH' };
+const geminiLevel = (effort) => GEMINI_LEVEL[effort] || String(effort).toUpperCase();
+
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -452,7 +457,7 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         generationConfig.thinkingConfig = { includeThoughts: true,
             ...(typeof req.params?.reasoning?.budgetTokens === 'number' ? { thinkingBudget: req.params.reasoning.budgetTokens } : {}),
             ...(/^gemini-(?:[3-9]|[1-9][0-9])/.test(targetModel) && req.params?.reasoning?.effort && req.params?.reasoning?.budgetTokens == null
-                ? { thinkingLevel: req.params.reasoning.effort.toUpperCase() } : {}),
+                ? { thinkingLevel: geminiLevel(req.params.reasoning.effort) } : {}),
         };
     }
 

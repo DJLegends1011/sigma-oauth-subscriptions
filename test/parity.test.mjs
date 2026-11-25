@@ -32,8 +32,14 @@ test('upstream effort resolution avoids conflicting suffix and effort flags', ()
     assert.equal(result.agyModel, 'gemini-3.8-flash-medium');
     assert.equal(result.agyEffort, undefined);
 });
-test('unsupported live effort variants fail without a model substitution', () => {
-    assert.throws(() => resolveGeminiModel('gemini-3.8-flash-high', 'medium', { source: 'agy', models: [{ id: 'gemini-3.8-flash-low' }] }), /has no/);
+test('a known effort a live model lacks becomes the nearest variant; a custom word still fails', () => {
+    const cat = { source: 'agy', models: [{ id: 'gemini-3.8-flash-low' }, { id: 'gemini-3.8-flash-high' }] };
+    assert.equal(resolveGeminiModel('gemini-3.8-flash-high', 'medium', { source: 'agy', models: [{ id: 'gemini-3.8-flash-low' }] }).agyModel, 'gemini-3.8-flash-low');
+    assert.equal(resolveGeminiModel('gemini-3.8-flash-low', 'medium', cat).agyModel, 'gemini-3.8-flash-high');
+    for (const [word, id] of [['xhigh', 'high'], ['max', 'high'], ['none', 'low'], ['minimal', 'low']]) {
+        assert.equal(resolveGeminiModel('gemini-3.8-flash-medium', word, cat).agyModel, `gemini-3.8-flash-${id}`);
+    }
+    assert.throws(() => resolveGeminiModel('gemini-3.8-flash-high', 'turbo', cat), /has no/);
 });
 test('subscription environment scrubs keys and gateway billing while retaining launcher paths', () => {
     const result = buildAgyEnv({ base: { HOME: '/fixture', PATH: '/bin', GEMINI_API_KEY: 'fixture', GOOGLE_GEMINI_BASE_URL: 'http://fixture', AGY_LLM_GATEWAY_URL: 'fixture', OPENAI_API_KEY: 'fixture', HTTPS_PROXY: 'http://proxy' } });

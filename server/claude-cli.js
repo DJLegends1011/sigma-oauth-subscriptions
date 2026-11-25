@@ -321,11 +321,14 @@ export function parseClaudeModel(requested) {
 }
 
 function clampEffort(modelInfo, effort) {
-    if (!effort) return undefined;
+    if (!effort || effort === 'none') return undefined; // no --effort flag
     const allowed = modelInfo.efforts || EFFORT_LEVELS;
     if (!allowed.length) return undefined;
     if (allowed.includes(effort)) return effort;
+    if (effort === 'minimal') return allowed[0];
     const idx = EFFORT_LEVELS.indexOf(effort);
+    // a custom word goes up as typed; the CLI refuses it visibly
+    if (idx < 0) return effort;
     for (let i = idx; i >= 0; i--) {
         if (allowed.includes(EFFORT_LEVELS[i])) return EFFORT_LEVELS[i];
     }
