@@ -27,7 +27,12 @@ import { streamIsolatedAgy, isolatedAgyModels, isolatedAgyStatus } from './isola
 // Gemini 3 names minimal, low, medium and high; none cannot switch thinking off there, so it is the lowest level.
 // A custom word goes up as typed and Gemini refuses it, which the connection's Test shows.
 const GEMINI_LEVEL = { none: 'MINIMAL', xhigh: 'HIGH', max: 'HIGH' };
-const geminiLevel = (effort) => GEMINI_LEVEL[effort] || String(effort).toUpperCase();
+// only some models take MINIMAL (tried live 2026-11-25: Flash-Lite, image, 3 / 3.5 / 3.6 Flash); elsewhere none and minimal are LOW
+const TAKES_MINIMAL = /flash-lite|image|^gemini-3-flash|^gemini-3\.[56]-flash/i;
+const geminiLevel = (effort, model) => {
+    const level = GEMINI_LEVEL[effort] || String(effort).toUpperCase();
+    return level === 'MINIMAL' && !TAKES_MINIMAL.test(String(model)) ? 'LOW' : level;
+};
 
 const CLOUDCODE_BASE = 'https://daily-cloudcode-pa.googleapis.com/v1internal';
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -457,7 +462,7 @@ async function* streamAgyDirect(profile, req, signal, LlmError, retriedAuth = fa
         generationConfig.thinkingConfig = { includeThoughts: true,
             ...(typeof req.params?.reasoning?.budgetTokens === 'number' ? { thinkingBudget: req.params.reasoning.budgetTokens } : {}),
             ...(/^gemini-(?:[3-9]|[1-9][0-9])/.test(targetModel) && req.params?.reasoning?.effort && req.params?.reasoning?.budgetTokens == null
-                ? { thinkingLevel: geminiLevel(req.params.reasoning.effort) } : {}),
+                ? { thinkingLevel: geminiLevel(req.params.reasoning.effort, targetModel) } : {}),
         };
     }
 
